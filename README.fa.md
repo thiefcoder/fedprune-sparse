@@ -1,7 +1,7 @@
 # FedPrune-Sparse
 
 نسخه انگلیسی اصلی در `README.md` قرار دارد. این فایل نسخه فارسی همراه پروژه است.
-Languages: English | [EN](README.md)
+زبان: فارسی  | [EN](README.md)
 
 ## هدف پروژه
 
