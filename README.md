@@ -2,7 +2,7 @@
 
 FedPrune-Sparse is a reproducible federated learning simulation for studying the joint effect of client-side model pruning and client-to-server delta sparsification under non-IID data. The project is structured for thesis/dissertation experiments: each run stores configuration, detailed English logs, round-level metrics, model checkpoints, and publication-ready figures under `results/`.
 
-A Persian version is available in `README.fa.md`.
+Languages: English | [فارسی](README.fa.md)
 
 ## Research Objective
 

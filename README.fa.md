@@ -1,6 +1,7 @@
 # FedPrune-Sparse
 
 نسخه انگلیسی اصلی در `README.md` قرار دارد. این فایل نسخه فارسی همراه پروژه است.
+Languages: English | [EN](README.md)
 
 ## هدف پروژه
 
@@ -40,15 +41,15 @@ FedAvg و به‌روزرسانی مدل سراسری
 
 ## ساختار پروژه
 
-| مسیر | کاربرد |
-|---|---|
-| `models/cnn.py` | مدل CNN کوچک برای MNIST با ساختار مناسب برای هرس ساختاری. |
-| `utils/model_pruning.py` | هرس غیرساختاری، هرس ساختاری و نسبت هرس adaptive برای هر کلاینت. |
-| `utils/gradient_sparsification.py` | روش‌های Top-K، Random و Cost-Weighted همراه با error feedback. |
-| `client/client.py` | منطق کلاینت: هرس، آموزش محلی، محاسبه delta و sparse کردن آن. |
-| `server/server.py` | منطق سرور: broadcast مدل، FedAvg و ارزیابی. |
-| `run_simulation.py` | اجرای کامل آزمایش و ذخیره خروجی‌ها. |
-| `scripts/compare_ablations.py` | اجرای خودکار چند آزمایش ablation. |
+| مسیر                               | کاربرد                                                          |
+| ---------------------------------- | --------------------------------------------------------------- |
+| `models/cnn.py`                    | مدل CNN کوچک برای MNIST با ساختار مناسب برای هرس ساختاری.       |
+| `utils/model_pruning.py`           | هرس غیرساختاری، هرس ساختاری و نسبت هرس adaptive برای هر کلاینت. |
+| `utils/gradient_sparsification.py` | روش‌های Top-K، Random و Cost-Weighted همراه با error feedback.  |
+| `client/client.py`                 | منطق کلاینت: هرس، آموزش محلی، محاسبه delta و sparse کردن آن.    |
+| `server/server.py`                 | منطق سرور: broadcast مدل، FedAvg و ارزیابی.                     |
+| `run_simulation.py`                | اجرای کامل آزمایش و ذخیره خروجی‌ها.                             |
+| `scripts/compare_ablations.py`     | اجرای خودکار چند آزمایش ablation.                               |
 
 ## نصب
 
@@ -112,30 +113,30 @@ results/<run_name>/
 └── experiment_dashboard.png
 ```
 
-| فایل | توضیح |
-|---|---|
-| `config.json` | همه تنظیمات اجرای همان آزمایش. |
-| `metrics.csv` | متریک‌های round به round برای تحلیل آماری. |
-| `run.log` | لاگ دقیق انگلیسی شامل انتخاب کلاینت‌ها و آمار هر round. |
-| `summary.json` | خلاصه نهایی، بهترین accuracy و مسیر artifactها. |
-| `final_model.pt` | وزن مدل سراسری بعد از آخرین round. |
-| `*.png` | نمودارهای ذخیره‌شده برای گزارش و رساله. |
+| فایل             | توضیح                                                   |
+| ---------------- | ------------------------------------------------------- |
+| `config.json`    | همه تنظیمات اجرای همان آزمایش.                          |
+| `metrics.csv`    | متریک‌های round به round برای تحلیل آماری.              |
+| `run.log`        | لاگ دقیق انگلیسی شامل انتخاب کلاینت‌ها و آمار هر round. |
+| `summary.json`   | خلاصه نهایی، بهترین accuracy و مسیر artifactها.         |
+| `final_model.pt` | وزن مدل سراسری بعد از آخرین round.                      |
+| `*.png`          | نمودارهای ذخیره‌شده برای گزارش و رساله.                 |
 
 ## آرگومان‌های مهم
 
-| آرگومان | پیش‌فرض | توضیح |
-|---|---:|---|
-| `--rounds` | `20` | تعداد roundهای فدرال. |
-| `--num_clients` | `20` | تعداد کلاینت‌های شبیه‌سازی‌شده. |
-| `--clients_per_round` | `10` | تعداد کلاینت‌های انتخاب‌شده در هر round. |
-| `--local_epochs` | `2` | تعداد epoch آموزش محلی. |
-| `--pruning_mode` | `structured` | نوع هرس: `structured` یا `unstructured`. |
-| `--pruning_ratio` | `0.4` | نسبت پایه هرس. |
-| `--adaptive_ratio` | فعال | نسبت هرس جداگانه برای هر کلاینت. |
-| `--sparsify_method` | `cost_weighted` | روش sparse کردن delta. |
-| `--sparsity_ratio` | `0.95` | نسبت مقدارهایی که قبل از ارسال صفر می‌شوند. |
-| `--results_dir` | `./results` | محل ذخیره خروجی‌ها. |
-| `--run_name` | زمان اجرا | نام اختیاری پوشه خروجی. |
+| آرگومان               |         پیش‌فرض | توضیح                                       |
+| --------------------- | --------------: | ------------------------------------------- |
+| `--rounds`            |            `20` | تعداد roundهای فدرال.                       |
+| `--num_clients`       |            `20` | تعداد کلاینت‌های شبیه‌سازی‌شده.             |
+| `--clients_per_round` |            `10` | تعداد کلاینت‌های انتخاب‌شده در هر round.    |
+| `--local_epochs`      |             `2` | تعداد epoch آموزش محلی.                     |
+| `--pruning_mode`      |    `structured` | نوع هرس: `structured` یا `unstructured`.    |
+| `--pruning_ratio`     |           `0.4` | نسبت پایه هرس.                              |
+| `--adaptive_ratio`    |            فعال | نسبت هرس جداگانه برای هر کلاینت.            |
+| `--sparsify_method`   | `cost_weighted` | روش sparse کردن delta.                      |
+| `--sparsity_ratio`    |          `0.95` | نسبت مقدارهایی که قبل از ارسال صفر می‌شوند. |
+| `--results_dir`       |     `./results` | محل ذخیره خروجی‌ها.                         |
+| `--run_name`          |       زمان اجرا | نام اختیاری پوشه خروجی.                     |
 
 ## نکته مهم
 
