@@ -1,0 +1,13 @@
+{
+  "final_test_accuracy": 0.1969,
+  "final_avg_transmitted_ratio": 0.9116971392114577,
+  "final_avg_pruning_ratio": 0.0,
+  "final_avg_round_time_sec": 5.9428119999938644,
+  "best_test_accuracy": 0.1969,
+  "rounds": 1,
+  "results_dir": "results\\smoke_validation",
+  "metrics_csv": "results\\smoke_validation\\metrics.csv",
+  "log_file": "results\\smoke_validation\\run.log",
+  "figures": [],
+  "model_checkpoint": "results\\smoke_validation\\final_model.pt"
+}

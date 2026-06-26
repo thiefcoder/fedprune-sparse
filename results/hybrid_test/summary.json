@@ -1,0 +1,8 @@
+{
+  "final_test_accuracy": 0.5707,
+  "final_avg_transmitted_ratio": 0.04999648253761865,
+  "final_avg_pruning_ratio": 0.5,
+  "best_test_accuracy": 0.6319,
+  "rounds": 20,
+  "results_dir": "results\\hybrid_test"
+}
