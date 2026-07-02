@@ -27,17 +27,28 @@ class FederatedServer:
         self,
         client_deltas: List[Dict[str, torch.Tensor]],
         client_weights: Optional[List[float]] = None,
+        contribution_masks: Optional[List[Dict[str, torch.Tensor]]] = None,
     ) -> None:
         """
         Average client deltas and apply the aggregated update to the global model.
 
         If no client weights are supplied, each selected client contributes
         equally. Passing sample-count weights recovers weighted FedAvg.
+        Contribution masks make the average parameter-wise: structured-pruned
+        clients only count for parameters they retained and trained.
         """
         if not client_deltas:
             return
 
         n = len(client_deltas)
+        if contribution_masks is None:
+            contribution_masks = [
+                {name: torch.ones_like(delta, dtype=torch.bool) for name, delta in deltas.items()}
+                for deltas in client_deltas
+            ]
+        if len(contribution_masks) != n:
+            raise ValueError("contribution_masks must match client_deltas length.")
+
         if client_weights is None:
             client_weights = [1.0 / n] * n
         else:
@@ -46,10 +57,20 @@ class FederatedServer:
 
         global_state = self.global_model.state_dict()
         aggregated = {name: torch.zeros_like(param) for name, param in global_state.items()}
+        denominators = {name: torch.zeros_like(param) for name, param in global_state.items()}
 
-        for deltas, weight in zip(client_deltas, client_weights):
+        for deltas, masks, weight in zip(client_deltas, contribution_masks, client_weights):
             for name, delta in deltas.items():
-                aggregated[name] += weight * delta.to(aggregated[name].device)
+                mask = masks[name].to(device=aggregated[name].device, dtype=aggregated[name].dtype)
+                aggregated[name] += weight * mask * delta.to(aggregated[name].device)
+                denominators[name] += weight * mask
+
+        for name in aggregated:
+            aggregated[name] = torch.where(
+                denominators[name] > 0,
+                aggregated[name] / denominators[name].clamp_min(torch.finfo(aggregated[name].dtype).eps),
+                aggregated[name],
+            )
 
         new_state = {name: global_state[name] + aggregated[name] for name in global_state}
         self.global_model.load_state_dict(new_state)

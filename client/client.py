@@ -16,7 +16,7 @@ from __future__ import annotations
 import copy
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -83,12 +83,16 @@ class FederatedClient:
             )
         return self.pruning_config.pruning_ratio
 
-    def local_update(self, global_model: nn.Module) -> Dict[str, torch.Tensor]:
+    def local_update(
+        self, global_model: nn.Module
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """
-        Run one full local training round and return the transmitted delta.
+        Run one full local training round and return the transmitted delta and mask.
 
-        The returned dictionary has the same tensor shapes as the global model
-        state_dict, even when structured pruning trains a smaller local model.
+        Both returned dictionaries have the same tensor shapes as the global
+        model state_dict, even when structured pruning trains a smaller local
+        model. The contribution mask marks parameters retained and trained by
+        this client.
         """
         start_time = time.perf_counter()
         device = torch.device(self.client_config.device)
@@ -148,8 +152,15 @@ class FederatedClient:
                 local_model, global_model, structured_keep_indices
             )
             local_state = expanded_local_state
+            contribution_masks = StructuredPruner.contribution_masks(
+                global_model, structured_keep_indices
+            )
         else:
             local_state = local_model.state_dict()
+            contribution_masks = {
+                name: torch.ones_like(param, dtype=torch.bool)
+                for name, param in global_state.items()
+            }
 
         deltas = {
             name: (local_state[name].cpu() - global_state[name].cpu())
@@ -171,7 +182,7 @@ class FederatedClient:
                 self.client_id, self.last_round_time, target_time
             )
 
-        return deltas
+        return deltas, contribution_masks
 
     def _estimate_target_round_time(self) -> float:
         """Return the baseline time used by online adaptive pruning."""

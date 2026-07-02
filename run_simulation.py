@@ -376,12 +376,14 @@ def main(argv: Iterable[str] | None = None):
         logger.info("Round %03d started | selected_clients=%s", round_idx, ",".join(selected_ids))
 
         round_deltas = []
+        round_contribution_masks = []
         transmitted_ratios = []
         pruning_ratios = []
         round_times = []
         for client in selected:
-            deltas = client.local_update(server.broadcast())
+            deltas, contribution_masks = client.local_update(server.broadcast())
             round_deltas.append(deltas)
+            round_contribution_masks.append(contribution_masks)
             stats = client.report_stats(deltas)
             transmitted_ratios.append(stats["transmitted_ratio"])
             pruning_ratios.append(stats["pruning_ratio"])
@@ -395,7 +397,7 @@ def main(argv: Iterable[str] | None = None):
                 stats["round_time_sec"],
             )
 
-        server.aggregate(round_deltas)
+        server.aggregate(round_deltas, contribution_masks=round_contribution_masks)
         acc = server.evaluate(test_loader, device=args.device)
         avg_transmitted = sum(transmitted_ratios) / len(transmitted_ratios)
         avg_pruning = sum(pruning_ratios) / len(pruning_ratios) if pruning_ratios else 0.0

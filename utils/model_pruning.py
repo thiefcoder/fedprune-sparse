@@ -242,6 +242,47 @@ class StructuredPruner:
 
         return full_state
 
+    @staticmethod
+    def contribution_masks(
+        global_template: nn.Module, keep_indices: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Build masks for parameters that were present in a structured-pruned model.
+
+        True entries are parameters retained and trained by the client. False
+        entries were absent from the pruned model and should not dilute server
+        aggregation for that parameter.
+        """
+        from models.cnn import SimpleCNN
+
+        if not isinstance(global_template, SimpleCNN):
+            raise TypeError("contribution_masks currently supports only SimpleCNN.")
+
+        masks = {
+            name: torch.zeros_like(param, dtype=torch.bool)
+            for name, param in global_template.state_dict().items()
+        }
+
+        conv1_keep = keep_indices["conv1"]
+        conv2_keep = keep_indices["conv2"]
+        fc1_keep = keep_indices["fc1"]
+        feat_size = global_template.image_size // 4
+        spatial = feat_size * feat_size
+        flatten_keep_idx = torch.cat(
+            [torch.arange(c.item() * spatial, (c.item() + 1) * spatial) for c in conv2_keep]
+        )
+
+        masks["conv1.weight"][conv1_keep] = True
+        masks["conv1.bias"][conv1_keep] = True
+        masks["conv2.weight"][conv2_keep.unsqueeze(1), conv1_keep.unsqueeze(0)] = True
+        masks["conv2.bias"][conv2_keep] = True
+        masks["fc1.weight"][fc1_keep.unsqueeze(1), flatten_keep_idx.unsqueeze(0)] = True
+        masks["fc1.bias"][fc1_keep] = True
+        masks["fc2.weight"][:, fc1_keep] = True
+        masks["fc2.bias"] = True
+
+        return masks
+
 
 # Per-client capability metadata for adaptive pruning.
 @dataclass
