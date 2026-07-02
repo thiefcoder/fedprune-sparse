@@ -279,7 +279,7 @@ class StructuredPruner:
         masks["fc1.weight"][fc1_keep.unsqueeze(1), flatten_keep_idx.unsqueeze(0)] = True
         masks["fc1.bias"][fc1_keep] = True
         masks["fc2.weight"][:, fc1_keep] = True
-        masks["fc2.bias"] = True
+        masks["fc2.bias"][:] = True
 
         return masks
 
