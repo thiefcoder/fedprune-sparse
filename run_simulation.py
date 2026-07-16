@@ -61,7 +61,9 @@ def setup_logging(run_dir: Path) -> logging.Logger:
     return logger
 
 
-def partition_non_iid(dataset, num_clients: int, classes_per_client: int = 2, seed: int = 0):
+def partition_non_iid_shards(
+    dataset, num_clients: int, classes_per_client: int = 2, seed: int = 0
+):
     """
     Partition a classification dataset into label-skewed non-IID client subsets.
 
@@ -108,6 +110,100 @@ def partition_non_iid(dataset, num_clients: int, classes_per_client: int = 2, se
             shard_ptr += 1
 
     return [Subset(dataset, idx) for idx in client_indices if len(idx) > 0]
+
+
+def partition_non_iid_dirichlet(
+    dataset,
+    num_clients: int,
+    alpha: float = 0.3,
+    min_samples_per_client: int = 10,
+    seed: int = 0,
+    max_attempts: int = 100,
+):
+    """
+    Partition a classification dataset using label-wise Dirichlet proportions.
+
+    Smaller ``alpha`` values create stronger label skew. Each class is
+    independently distributed across clients according to a Dirichlet draw,
+    while every example is assigned exactly once. The sampler retries until
+    every client receives at least ``min_samples_per_client`` examples.
+    """
+    if alpha <= 0:
+        raise ValueError("dirichlet_alpha must be positive.")
+    if min_samples_per_client < 1:
+        raise ValueError("min_samples_per_client must be at least 1.")
+    if num_clients * min_samples_per_client > len(dataset):
+        raise ValueError(
+            "num_clients * min_samples_per_client cannot exceed the dataset size."
+        )
+
+    targets = dataset.targets if hasattr(dataset, "targets") else dataset.labels
+    targets = torch.as_tensor(targets)
+    num_classes = int(targets.max().item()) + 1
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        for _ in range(max_attempts):
+            client_indices = [[] for _ in range(num_clients)]
+
+            for class_id in range(num_classes):
+                class_indices = (targets == class_id).nonzero(as_tuple=True)[0]
+                class_indices = class_indices[torch.randperm(class_indices.numel())]
+                proportions = torch.distributions.Dirichlet(
+                    torch.full((num_clients,), alpha, dtype=torch.float32)
+                ).sample()
+
+                raw_counts = proportions * class_indices.numel()
+                counts = torch.floor(raw_counts).to(torch.long)
+                remainder = class_indices.numel() - int(counts.sum().item())
+                if remainder:
+                    _, extra_indices = torch.topk(raw_counts - counts, remainder)
+                    counts[extra_indices] += 1
+
+                start = 0
+                for client_id, count in enumerate(counts.tolist()):
+                    if count:
+                        client_indices[client_id].extend(
+                            class_indices[start : start + count].tolist()
+                        )
+                    start += count
+
+            if min(len(indices) for indices in client_indices) >= min_samples_per_client:
+                return [Subset(dataset, indices) for indices in client_indices]
+
+    raise RuntimeError(
+        "Unable to construct a Dirichlet partition with the requested minimum "
+        f"client size after {max_attempts} attempts. Increase dirichlet_alpha "
+        "or lower min_samples_per_client."
+    )
+
+
+def partition_non_iid(
+    dataset,
+    num_clients: int,
+    classes_per_client: int = 2,
+    seed: int = 0,
+    strategy: str = "dirichlet",
+    dirichlet_alpha: float = 0.3,
+    min_samples_per_client: int = 10,
+):
+    """Partition data with either the legacy shard method or Dirichlet label skew."""
+    if strategy == "dirichlet":
+        return partition_non_iid_dirichlet(
+            dataset,
+            num_clients=num_clients,
+            alpha=dirichlet_alpha,
+            min_samples_per_client=min_samples_per_client,
+            seed=seed,
+        )
+    if strategy == "shard":
+        return partition_non_iid_shards(
+            dataset,
+            num_clients=num_clients,
+            classes_per_client=classes_per_client,
+            seed=seed,
+        )
+    raise ValueError(f"Unknown partition strategy: {strategy}")
 
 
 def build_simulated_capabilities(num_clients: int, seed: int = 0) -> list[ClientCapability]:
@@ -229,6 +325,25 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--classes_per_client", type=int, default=2)
+    parser.add_argument(
+        "--partition_strategy",
+        type=str,
+        choices=["dirichlet", "shard"],
+        default="dirichlet",
+        help="Client data partitioning method. Dirichlet is the default non-IID setting.",
+    )
+    parser.add_argument(
+        "--dirichlet_alpha",
+        type=float,
+        default=0.3,
+        help="Dirichlet concentration for label skew; smaller values are more non-IID.",
+    )
+    parser.add_argument(
+        "--min_samples_per_client",
+        type=int,
+        default=10,
+        help="Minimum samples per client when using Dirichlet partitioning.",
+    )
     parser.add_argument("--seed", type=int, default=0)
 
     parser.add_argument("--pruning_mode", type=str, default="structured", choices=["unstructured", "structured"])
@@ -253,6 +368,44 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sparsity_ratio", type=float, default=0.95)
     parser.add_argument("--no_sparsification", action="store_true")
     parser.add_argument("--no_error_feedback", action="store_true")
+    parser.add_argument(
+        "--warmup_rounds",
+        type=int,
+        default=0,
+        help="Initial rounds without pruning or sparsification. Zero preserves prior behavior.",
+    )
+    parser.add_argument(
+        "--compression_ramp_rounds",
+        type=int,
+        default=0,
+        help="Post-warm-up rounds used to linearly increase pruning and sparsification strength.",
+    )
+
+    parser.add_argument(
+        "--baseline_fedprox_mu",
+        type=float,
+        default=0.0,
+        help="FedProx proximal coefficient. Zero preserves ordinary local SGD.",
+    )
+    parser.add_argument(
+        "--aggregation",
+        type=str,
+        default="fedavg",
+        choices=["fedavg", "krum", "trimmed_mean"],
+        help="Server aggregation strategy.",
+    )
+    parser.add_argument(
+        "--krum_f",
+        type=int,
+        default=0,
+        help="Assumed number of malicious or outlier clients for Krum.",
+    )
+    parser.add_argument(
+        "--trim_ratio",
+        type=float,
+        default=0.0,
+        help="Fraction trimmed from each parameter tail for trimmed-mean aggregation.",
+    )
 
     parser.add_argument("--data_root", type=str, default="./data", help="Directory for MNIST download/cache.")
     parser.add_argument("--results_dir", type=str, default="./results", help="Directory for outputs and logs.")
@@ -291,13 +444,22 @@ def main(argv: Iterable[str] | None = None):
     test_set = datasets.MNIST(root=args.data_root, train=False, download=True, transform=transform)
 
     client_subsets = partition_non_iid(
-        train_set, args.num_clients, classes_per_client=args.classes_per_client, seed=args.seed
+        train_set,
+        args.num_clients,
+        classes_per_client=args.classes_per_client,
+        seed=args.seed,
+        strategy=args.partition_strategy,
+        dirichlet_alpha=args.dirichlet_alpha,
+        min_samples_per_client=args.min_samples_per_client,
     )
     train_loaders = [DataLoader(s, batch_size=args.batch_size, shuffle=True) for s in client_subsets]
     test_loader = DataLoader(test_set, batch_size=256, shuffle=False)
     logger.info(
-        "Data partitioned into %d non-IID clients with %d classes per client.",
+        "Data partitioned into %d non-IID clients | strategy=%s | "
+        "dirichlet_alpha=%.3f | classes_per_client=%d.",
         len(train_loaders),
+        args.partition_strategy,
+        args.dirichlet_alpha,
         args.classes_per_client,
     )
 
@@ -318,6 +480,9 @@ def main(argv: Iterable[str] | None = None):
         device=args.device,
         enable_pruning=not args.no_pruning,
         enable_sparsification=not args.no_sparsification,
+        baseline_fedprox_mu=args.baseline_fedprox_mu,
+        warmup_rounds=args.warmup_rounds,
+        compression_ramp_rounds=args.compression_ramp_rounds,
     )
 
     global_model = SimpleCNN(in_channels=1, num_classes=10, image_size=28).to(args.device)
@@ -353,7 +518,8 @@ def main(argv: Iterable[str] | None = None):
 
     logger.info(
         "Experiment setup | clients=%d | clients_per_round=%d | rounds=%d | local_epochs=%d | "
-        "pruning=%s (%s, ratio=%.3f, adaptive=%s) | sparsification=%s (%s, sparsity=%.3f, error_feedback=%s)",
+        "pruning=%s (%s, ratio=%.3f, adaptive=%s) | sparsification=%s (%s, sparsity=%.3f, "
+        "error_feedback=%s) | warmup_rounds=%d | compression_ramp_rounds=%d",
         len(clients),
         args.clients_per_round,
         args.rounds,
@@ -366,6 +532,15 @@ def main(argv: Iterable[str] | None = None):
         args.sparsify_method,
         args.sparsity_ratio,
         not args.no_error_feedback,
+        args.warmup_rounds,
+        args.compression_ramp_rounds,
+    )
+    logger.info(
+        "Baselines | fedprox_mu=%.6f | aggregation=%s | krum_f=%d | trim_ratio=%.3f",
+        args.baseline_fedprox_mu,
+        args.aggregation,
+        args.krum_f,
+        args.trim_ratio,
     )
 
     metrics_history = []
@@ -379,28 +554,41 @@ def main(argv: Iterable[str] | None = None):
         round_contribution_masks = []
         transmitted_ratios = []
         pruning_ratios = []
+        sparsity_ratios = []
         round_times = []
         for client in selected:
-            deltas, contribution_masks = client.local_update(server.broadcast())
+            deltas, contribution_masks = client.local_update(
+                server.broadcast(), round_idx=round_idx
+            )
             round_deltas.append(deltas)
             round_contribution_masks.append(contribution_masks)
             stats = client.report_stats(deltas)
             transmitted_ratios.append(stats["transmitted_ratio"])
             pruning_ratios.append(stats["pruning_ratio"])
+            sparsity_ratios.append(stats["sparsity_ratio"])
             round_times.append(stats["round_time_sec"])
             logger.info(
-                "Round %03d client %s | transmitted_ratio=%.6f | pruning_ratio=%.6f | update_time_sec=%.4f",
+                "Round %03d client %s | transmitted_ratio=%.6f | pruning_ratio=%.6f | "
+                "sparsity_ratio=%.6f | update_time_sec=%.4f",
                 round_idx,
                 stats["client_id"],
                 stats["transmitted_ratio"],
                 stats["pruning_ratio"],
+                stats["sparsity_ratio"],
                 stats["round_time_sec"],
             )
 
-        server.aggregate(round_deltas, contribution_masks=round_contribution_masks)
+        server.aggregate(
+            round_deltas,
+            contribution_masks=round_contribution_masks,
+            aggregation=args.aggregation,
+            krum_f=args.krum_f,
+            trim_ratio=args.trim_ratio,
+        )
         acc = server.evaluate(test_loader, device=args.device)
         avg_transmitted = sum(transmitted_ratios) / len(transmitted_ratios)
         avg_pruning = sum(pruning_ratios) / len(pruning_ratios) if pruning_ratios else 0.0
+        avg_sparsity = sum(sparsity_ratios) / len(sparsity_ratios) if sparsity_ratios else 0.0
         avg_round_time = sum(round_times) / len(round_times)
 
         metrics = {
@@ -408,17 +596,19 @@ def main(argv: Iterable[str] | None = None):
             "test_accuracy": acc,
             "avg_transmitted_ratio": avg_transmitted,
             "avg_pruning_ratio": avg_pruning,
+            "avg_sparsity_ratio": avg_sparsity,
             "avg_round_time_sec": avg_round_time,
         }
         metrics_history.append(metrics)
 
         logger.info(
             "Round %03d completed | test_accuracy=%.4f%% | avg_transmitted_ratio=%.4f%% | "
-            "avg_pruning_ratio=%.4f%% | avg_round_time_sec=%.4f",
+            "avg_pruning_ratio=%.4f%% | avg_sparsity_ratio=%.4f%% | avg_round_time_sec=%.4f",
             round_idx,
             acc * 100,
             avg_transmitted * 100,
             avg_pruning * 100,
+            avg_sparsity * 100,
             avg_round_time,
         )
 
@@ -431,6 +621,7 @@ def main(argv: Iterable[str] | None = None):
             "final_test_accuracy": metrics_history[-1]["test_accuracy"],
             "final_avg_transmitted_ratio": metrics_history[-1]["avg_transmitted_ratio"],
             "final_avg_pruning_ratio": metrics_history[-1]["avg_pruning_ratio"],
+            "final_avg_sparsity_ratio": metrics_history[-1]["avg_sparsity_ratio"],
             "final_avg_round_time_sec": metrics_history[-1]["avg_round_time_sec"],
             "best_test_accuracy": max(row["test_accuracy"] for row in metrics_history),
             "rounds": len(metrics_history),

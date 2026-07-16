@@ -44,6 +44,9 @@ class ClientConfig:
     device: str = "cpu"
     enable_pruning: bool = True
     enable_sparsification: bool = True
+    baseline_fedprox_mu: float = 0.0
+    warmup_rounds: int = 0
+    compression_ramp_rounds: int = 0
 
 
 class FederatedClient:
@@ -68,6 +71,8 @@ class FederatedClient:
 
         # Used by online adaptive pruning to tune the next-round pruning ratio.
         self.last_round_time: float = 0.0
+        self.last_effective_pruning_ratio: float = 0.0
+        self.last_effective_sparsity_ratio: float = 0.0
 
     def _get_sparsifier(self) -> BaseSparsifier:
         if self._sparsifier is None:
@@ -84,7 +89,7 @@ class FederatedClient:
         return self.pruning_config.pruning_ratio
 
     def local_update(
-        self, global_model: nn.Module
+        self, global_model: nn.Module, round_idx: int = 1
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """
         Run one full local training round and return the transmitted delta and mask.
@@ -94,17 +99,43 @@ class FederatedClient:
         model. The contribution mask marks parameters retained and trained by
         this client.
         """
+        if round_idx < 1:
+            raise ValueError("round_idx must be at least 1.")
+        if self.client_config.warmup_rounds < 0:
+            raise ValueError("warmup_rounds must be non-negative.")
+        if self.client_config.compression_ramp_rounds < 0:
+            raise ValueError("compression_ramp_rounds must be non-negative.")
+
         start_time = time.perf_counter()
         device = torch.device(self.client_config.device)
         global_state = global_model.state_dict()
+        fedprox_reference = {
+            name: parameter.detach().to(device)
+            for name, parameter in global_model.named_parameters()
+        }
 
         local_model: nn.Module
         unstructured_pruner: Optional[UnstructuredPruner] = None
         structured_keep_indices = None
 
+        warmup_active = round_idx <= self.client_config.warmup_rounds
+        pruning_active = self.client_config.enable_pruning and not warmup_active
+        sparsification_active = (
+            self.client_config.enable_sparsification and not warmup_active
+        )
+        ramp_progress = self._compression_ramp_progress(round_idx)
+        self.last_effective_pruning_ratio = (
+            self._current_pruning_ratio() * ramp_progress if pruning_active else 0.0
+        )
+        self.last_effective_sparsity_ratio = (
+            self.sparsification_config.sparsity_ratio * ramp_progress
+            if sparsification_active
+            else 0.0
+        )
+
         # Stage 1: reduce local model cost before optimization, when enabled.
-        if self.client_config.enable_pruning:
-            ratio = self._current_pruning_ratio()
+        if pruning_active:
+            ratio = self.last_effective_pruning_ratio
 
             if self.pruning_config.mode == "unstructured":
                 local_model = copy.deepcopy(global_model).to(device)
@@ -134,6 +165,9 @@ class FederatedClient:
             unstructured_pruner.register_step_hook(optimizer)
 
         criterion = nn.CrossEntropyLoss()
+        fedprox_mu = self.client_config.baseline_fedprox_mu
+        if fedprox_mu < 0:
+            raise ValueError("baseline_fedprox_mu must be non-negative.")
 
         # Stage 2: train on the client's local data partition.
         local_model.train()
@@ -143,6 +177,13 @@ class FederatedClient:
                 optimizer.zero_grad()
                 output = local_model(x)
                 loss = criterion(output, y)
+                if fedprox_mu > 0:
+                    proximal_term = torch.zeros((), device=device)
+                    for name, parameter in local_model.named_parameters():
+                        reference = fedprox_reference.get(name)
+                        if reference is not None and reference.shape == parameter.shape:
+                            proximal_term += torch.sum((parameter - reference) ** 2)
+                    loss = loss + 0.5 * fedprox_mu * proximal_term
                 loss.backward()
                 optimizer.step()
 
@@ -168,11 +209,16 @@ class FederatedClient:
         }
 
         # Stage 3: sparsify the outbound delta to reduce communication cost.
-        if self.client_config.enable_sparsification:
+        if sparsification_active:
             sparsifier = self._get_sparsifier()
             if isinstance(sparsifier, CostWeightedSparsifier):
                 sparsifier.auto_register_cost_from_model(global_model)
-            deltas = sparsifier.sparsify_state_dict(deltas)
+            original_sparsity_ratio = sparsifier.config.sparsity_ratio
+            sparsifier.config.sparsity_ratio = self.last_effective_sparsity_ratio
+            try:
+                deltas = sparsifier.sparsify_state_dict(deltas)
+            finally:
+                sparsifier.config.sparsity_ratio = original_sparsity_ratio
 
         self.last_round_time = time.perf_counter() - start_time
 
@@ -183,6 +229,18 @@ class FederatedClient:
             )
 
         return deltas, contribution_masks
+
+    def _compression_ramp_progress(self, round_idx: int) -> float:
+        """Return the post-warm-up compression strength between zero and one."""
+        if round_idx <= self.client_config.warmup_rounds:
+            return 0.0
+        if self.client_config.compression_ramp_rounds == 0:
+            return 1.0
+        rounds_after_warmup = round_idx - self.client_config.warmup_rounds
+        return min(
+            1.0,
+            rounds_after_warmup / self.client_config.compression_ramp_rounds,
+        )
 
     def _estimate_target_round_time(self) -> float:
         """Return the baseline time used by online adaptive pruning."""
@@ -203,5 +261,6 @@ class FederatedClient:
             "client_id": self.client_id,
             "transmitted_ratio": nonzero / total if total > 0 else 0.0,
             "round_time_sec": self.last_round_time,
-            "pruning_ratio": self._current_pruning_ratio() if self.client_config.enable_pruning else 0.0,
+            "pruning_ratio": self.last_effective_pruning_ratio,
+            "sparsity_ratio": self.last_effective_sparsity_ratio,
         }
