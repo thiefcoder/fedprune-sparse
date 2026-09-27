@@ -185,3 +185,15 @@ cython_debug/
 fedprune-sparse.rar
 fedprune-sparse.rar
 fedprune-sparse.rar
+
+# Local Word documents and temporary lock files
+*.doc
+*.docx
+*.docm
+*.dot
+*.dotx
+*.dotm
+~$*.doc*
+
+# Local Python virtual environment
+/.ven/
